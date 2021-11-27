@@ -16,7 +16,7 @@
 - [Setting it up in Azure](#setting-it-up-in-azure)
   - [Prerequisites](#prerequisites)
   - [Import runbook](#import-runbook)
-  - [Create credential asset](#create-credential-asset)
+  - [Setting up Credentials](#setting-up-credentials)
   - [Create variables for subscription name and time zone](#create-variables-for-subscription-name-and-time-zone)
   - [Schedule the runbook](#schedule-the-runbook)
   - [Configure shutdown schedule tags](#configure-shutdown-schedule-tags)
@@ -160,10 +160,14 @@ The runbook is contained in the file "AutoShutdownSchedule.ps1" within the downl
 Use one of the options below. 
 
 ### System Managed Identity
-Create a System Managed Identity in the Automation Account and ensure it has Read and Virtual Machine Contributor rights in the subscription. If you remove the Automation Account the System Managed Identity will also automatically be removed. Create a variable with the name **Managed Identity ID** and the value as **System**.
+Create a System Managed Identity in the Automation Account and ensure it has Read and Virtual Machine Contributor rights in the subscription. If you remove the Automation Account the System Managed Identity will also automatically be removed.
+
+Note: A System Managed Identity takes precedence over a Run As Account 
 
 ### User Managed Identity
 Create a User Managed Identity and select that identity for use in the Automation Account. The identity must have Read and Virtual Machine Contributor rights. Create a variable with the name **Managed Identity ID** and the value as the **ID** of the managed user identity.
+
+Note: A User Managed Identity takes precedence over a System Managed Identity and a Run As Account 
 
 ### Run As Account
 ```diff
@@ -173,15 +177,15 @@ A Run As account automatically gets Contributor rights on the subscription. Make
 
 Note: A Managed Identity takes precedence over a Run As Account
 
-## Create Variables for Subscription Name and time zone
-The runbook also needs to know which subscription to connect to when it runs. In theory, a runbook can connect to any subscription, so we must specify one in particular. This is easily done by setting up a variable in our automation account.
+## Create Variables for Subscription Name(s) and time zone
+The runbook also needs to know which subscription(s) to connect to when it runs. In theory, a runbook can connect to any subscription, so we must specify which ones. This is easily done by setting up a variable in our automation account.
 - Open subscription in [Azure portal](https://portal.azure.com)
 - Note your target subscription name as shown in Browse > Subscriptions
 - Open the Automation Account which will contain the runbook
 - Open the **Assets** view from the resources section
 - Open the **Variables** view
 - Click **Add a variable** from the top menu
-- Give the variable a name ("**Default Azure Subscription**" expected by default), and enter the subscription name as the variable’s value. Click **Create**.
+- Give the variable the name "**Azure Subscription(s)**", and enter either a single subscription name/id, or a comma seperated list of subscription names/ids as the variable’s value. Click **Create**.
 - Click **Add a variable** from the top menu again
 - Give the variable a name ("**Default Time Zone**" expected by default), and enter the time zone name as the variable’s value, for example "W. Europe Standard Time". Use the PowerShell command `Get-TimeZone -ListAvailable` to see all recognized time zones.  Click **Create**.
 

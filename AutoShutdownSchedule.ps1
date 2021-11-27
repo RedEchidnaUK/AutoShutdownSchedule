@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 3.9
+.VERSION 4.0
 
 .GUID 482e19fb-a8f0-4e3c-acbc-63b535d6486e
 
@@ -68,7 +68,7 @@ param(
     [parameter(Mandatory = $false)]
     [String] $AzureCredentialName = "Use *Default Automation Credential* Asset",
     [parameter(Mandatory = $false)]
-    [String] $AzureSubscriptionName = "Use *Default Azure Subscription* Variable Value",
+    [String] $AzureSubscriptionCSVList = "Use *Default Azure Subscription* Variable Value",
     [parameter(Mandatory = $false)]
     [String] $tz = "Use *Default Time Zone* Variable Value",
     [parameter(Mandatory = $false)]
@@ -310,8 +310,7 @@ try {
             Write-Output "Specified time zone: [$tz]"
         }
         else {
-            #throw "No time zone was specified, and no variable asset with name 'Default Time Zone' was found. Either specify a time zone or define the default using a variable setting"
-            Write-Output "No time zone was specified, and no variable asset with name 'Default Time Zone' was found, will use UTC"
+            Write-Warning "No time zone was specified, and no variable asset with name 'Default Time Zone' was found, will use UTC"
             $tz = 'UTC'
 
         }
@@ -320,6 +319,11 @@ try {
     $tempTime = (Get-Date).ToUniversalTime()
     $tzEST = [System.TimeZoneInfo]::FindSystemTimeZoneById($tz)
     $CurrentTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzEST)
+    $ManagedIdentityId = Get-AutomationVariable -Name "Managed Identity ID" -ErrorAction Ignore
+    $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection" -ErrorAction Ignore
+    $AzureSubscriptionList = @()
+    $subscriptionError = $false
+    $systemIdentity = $false
 
     Write-Output "Runbook started. Version: $VERSION"
     if ($Simulate) {
@@ -329,146 +333,162 @@ try {
         Write-Output "*** Running in LIVE mode. Schedules will be enforced. ***"
     }
     Write-Output "Current $tz time [$($currentTime.ToString("dddd, yyyy MMM dd HH:mm:ss"))] will be checked against schedules"
-        
-    # Retrieve subscription name from variable asset if not specified
-    if ($AzureSubscriptionName -eq "Use *Default Azure Subscription* Variable Value") {
-        $AzureSubscriptionName = Get-AutomationVariable -Name "Default Azure Subscription" -ErrorAction Ignore
-        if ($AzureSubscriptionName.length -gt 0) {
-            Write-Output "Specified subscription name/ID: [$AzureSubscriptionName]"
-        }
-    }
-
-    # Retrieve credential
-    $ManagedIdentityId = Get-AutomationVariable -Name "Managed Identity ID" -ErrorAction Ignore
-    $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection" -ErrorAction Ignore
-    if ($ManagedIdentityId) {
-        if ($ManagedIdentityId -eq 'System') {
-            Write-Output ("Logging in to Azure using the system managed identity...")
-            Connect-AzAccount -Identity > $null
-        }
-        else {
-            Write-Output ("Logging in to Azure using the user managed identity ($IdentityName)...")
-            Connect-AzAccount -Identity -AccountId $ManagedIdentityId > $null
-        }    
-    }
-    elseif ($RunAsConnection) {
-        Write-Output ("Logging in to Azure using the runas account...")
-        Connect-AzAccount -ServicePrincipal -TenantId $RunAsConnection.TenantId -ApplicationId $RunAsConnection.ApplicationId -CertificateThumbprint $RunAsConnection.CertificateThumbprint -SubscriptionId $RunAsConnection.SubscriptionId > $null
-    }
-    else {
-        throw "No 'Azure Run As Account' or Managed Identity Supplied."
-    }
-
-    # If subscription is set in varable, use that. Otherwise use subscription from the runas account
-    if ($AzureSubscriptionName.length -eq 0) {
-        $AzureSubscriptionName = $RunAsConnection.SubscriptionId
-    }
     
-
-    # Validate subscription
-    $subscriptions = @(Get-AzSubscription | Where-Object { $_.Name -eq $AzureSubscriptionName -or $_.Id -eq $AzureSubscriptionName })
-    if ($subscriptions.Count -eq 1) {
-        # Set working subscription
-        $targetSubscription = $subscriptions | Select-Object -First 1
-        $targetSubscription | Select-AzSubscription > $null
-
-        Set-AzContext -SubscriptionId $targetSubscription.SubscriptionId > $null
-
-        Write-Output "Working against subscription: $($targetSubscription.Name) ($($targetSubscription.SubscriptionId))"
+    # Retrieve subscription name from variable asset if not specified, if that doesn't exist try and use the Run As subscritpion
+    if ($AzureSubscriptionCSVList -eq "Use *Default Azure Subscription* Variable Value") {
+        $AzureSubscriptionCSVList = Get-AutomationVariable -Name "Azure Subscription(s)" -ErrorAction Ignore
+        if ($AzureSubscriptionCSVList.length -eq 0) {
+            $AzureSubscriptionCSVList = $RunAsConnection.SubscriptionId
+        }
     }
+
+    # Retrieve credentials and connect
+    # If we have a user managed identity use that (this allows us to override a system managed identity if required)
+    if ($ManagedIdentityId) {
+        Write-Output ("Logging in to Azure using the user managed identity...")
+        Connect-AzAccount -Identity -AccountId $ManagedIdentityId -ErrorAction stop > $null
+        $IdentityName = (Get-AzADServicePrincipal -objectId $ManagedIdentityId).DisplayName
+        Write-Output "Logged in using user managed identity: $IdentityName ($ManagedIdentityId)"
+    }
+    # If we don't have a user managed identity try and use a system managed identity
     else {
-        if ($subscription.Count -eq 0) {
-            throw "No accessible subscription found with name or ID [$AzureSubscriptionName]. Check the runbook parameters and ensure user is a co-administrator on the target subscription."
+        try {   
+            Write-Output ("Logging in to Azure using the system managed identity...")       
+            Connect-AzAccount -Identity -ErrorAction stop > $null
+            $systemIdentity = $true
+            Write-Output "Logged in using system managed identity."
         }
-        elseif ($subscriptions.Count -gt 1) {
-            throw "More than one accessible subscription found with name or ID [$AzureSubscriptionName]. Please ensure your subscription names are unique, or specify the ID instead"
+        catch {
+            Write-Warning "Failed to login to Azure using the system managed identity"
+            $systemIdentity = $false
         }
+        # If we don't have a any managed identity try and use a Run As account
+        if (!$systemIdentity) {
+            if ($RunAsConnection) {
+                Write-Output ("Logging in to Azure using the Run As account...")
+                Connect-AzAccount -ServicePrincipal -TenantId $RunAsConnection.TenantId -ApplicationId $RunAsConnection.ApplicationId -CertificateThumbprint $RunAsConnection.CertificateThumbprint -SubscriptionId $RunAsConnection.SubscriptionId > $null
+                Write-Output "Logged in using Run As account."
+            }
+            else {
+                throw "No Managed Identity or Run As account."
+            }
+        }  
     }
 
-    # Get a list of all virtual machines in subscription
-    $resourceManagerVMList = Get-AzVM | Sort-Object Name
+    $AzureSubscriptionList = ($AzureSubscriptionCSVList -split ",").trim()
 
-    # Get resource groups that are tagged for automatic shutdown of resources
-    $taggedResourceGroups = @(Get-AzResourceGroup | Where-Object { $_.Tags.Count -gt 0 -and $_.Tags.AutoShutdownSchedule })
-    $taggedResourceGroupNames = @($taggedResourceGroups | Select-Object -ExpandProperty ResourceGroupName)
-    Write-Output "Found [$($taggedResourceGroups.Count)] schedule-tagged resource groups in subscription"	
+    foreach ($AzureSubscription in $AzureSubscriptionList) {
 
-    # For each VM, determine
-    #  - Is it directly tagged for shutdown or member of a tagged resource group
-    #  - Is the current time within the tagged schedule 
-    # Then assert its correct power state based on the assigned schedule (if present)
-    Write-Output "Processing [$($resourceManagerVMList.Count)] virtual machines found in subscription"
-    foreach ($vm in $resourceManagerVMList) {
-        $script:DoNotStart = $false
-        # Deallocate all machines stopped and not deallocated, regardless of tags      
-        DeallocateVirtualMachine -VirtualMachine $vm -Simulate $Simulate -Deallocate $Deallocate
+        # Validate subscription
+        $subscriptions = @(Get-AzSubscription | Where-Object { $_.Name -eq $AzureSubscription -or $_.Id -eq $AzureSubscription })
+        if ($subscriptions.Count -eq 1) {
+            # Set working subscription
+            $targetSubscription = $subscriptions | Select-Object -First 1
+            $targetSubscription | Select-AzSubscription > $null
 
-        $schedule = $null
+            Set-AzContext -SubscriptionId $targetSubscription.SubscriptionId > $null
+            Write-Output "----------------------------"
+            Write-Output "Working against subscription: $($targetSubscription.Name) ($($targetSubscription.SubscriptionId))"
 
-        # Check for direct tag or group-inherited tag
-        if ($vm.Tags -and $vm.Tags.AutoShutdownSchedule) {
-            # VM has direct tag (possible for resource manager deployment model VMs). Prefer this tag schedule.
-            $schedule = $vm.Tags.AutoShutdownSchedule
-            Write-Output "[$($vm.Name)]: Found direct VM schedule tag with value: $schedule"
-        }
-        elseif ($taggedResourceGroupNames -contains $vm.ResourceGroupName) {
-            # VM belongs to a tagged resource group. Use the group tag
-            $parentGroup = $taggedResourceGroups | Where-Object ResourceGroupName -EQ $vm.ResourceGroupName
-            $schedule = $parentGroup.Tags.AutoShutdownSchedule
-            Write-Output "[$($vm.Name)]: Found parent resource group schedule tag with value: $schedule"
-        }
-        else {
-            # No direct or inherited tag. Skip this VM.
-            Write-Output "[$($vm.Name)]: Not tagged for shutdown directly or via membership in a tagged resource group. Skipping this VM."
-            continue
-        }
+            # Get a list of all virtual machines in subscription
+            $resourceManagerVMList = Get-AzVM | Sort-Object Name
 
-        # Check that tag value was succesfully obtained
-        if ($null -eq $schedule) {
-            Write-Output "[$($vm.Name)]: Failed to get tagged schedule for virtual machine. Skipping this VM."
-            continue
-        }
+            # Get resource groups that are tagged for automatic shutdown of resources
+            $taggedResourceGroups = @(Get-AzResourceGroup | Where-Object { $_.Tags.Count -gt 0 -and $_.Tags.AutoShutdownSchedule })
+            $taggedResourceGroupNames = @($taggedResourceGroups | Select-Object -ExpandProperty ResourceGroupName)
+            Write-Output "Found [$($taggedResourceGroups.Count)] schedule-tagged resource groups in subscription"	
 
-        $Result = ValidateScheduleList $schedule
-        if ($Result -ne 'OK') {
-            Write-Error "[$($vm.Name)]: $Result. Skipping this VM."
-            continue
-        }
+            # For each VM, determine
+            #  - Is it directly tagged for shutdown or member of a tagged resource group
+            #  - Is the current time within the tagged schedule 
+            # Then assert its correct power state based on the assigned schedule (if present)
+            Write-Output "Processing [$($resourceManagerVMList.Count)] virtual machines found in subscription"
+            foreach ($vm in $resourceManagerVMList) {
+                $script:DoNotStart = $false
+                # Deallocate all machines stopped and not deallocated, regardless of tags      
+                DeallocateVirtualMachine -VirtualMachine $vm -Simulate $Simulate -Deallocate $Deallocate
 
-        # Parse the ranges in the Tag value. Expects a string of comma-separated time ranges, or a single time range
-        $timeRangeList = @($schedule -split "," | ForEach-Object { $_.Trim() })
+                $schedule = $null
+
+                # Check for direct tag or group-inherited tag
+                if ($vm.Tags -and $vm.Tags.AutoShutdownSchedule) {
+                    # VM has direct tag (possible for resource manager deployment model VMs). Prefer this tag schedule.
+                    $schedule = $vm.Tags.AutoShutdownSchedule
+                    Write-Output "[$($vm.Name)]: Found direct VM schedule tag with value: $schedule"
+                }
+                elseif ($taggedResourceGroupNames -contains $vm.ResourceGroupName) {
+                    # VM belongs to a tagged resource group. Use the group tag
+                    $parentGroup = $taggedResourceGroups | Where-Object ResourceGroupName -EQ $vm.ResourceGroupName
+                    $schedule = $parentGroup.Tags.AutoShutdownSchedule
+                    Write-Output "[$($vm.Name)]: Found parent resource group schedule tag with value: $schedule"
+                }
+                else {
+                    # No direct or inherited tag. Skip this VM.
+                    Write-Output "[$($vm.Name)]: Not tagged for shutdown directly or via membership in a tagged resource group. Skipping this VM."
+                    continue
+                }
+
+                # Check that tag value was succesfully obtained
+                if ($null -eq $schedule) {
+                    Write-Warning "[$($vm.Name)]: Failed to get tagged schedule for virtual machine. Skipping this VM."
+                    continue
+                }
+
+                $Result = ValidateScheduleList $schedule
+                if ($Result -ne 'OK') {
+                    Write-Error "[$($vm.Name)]: $Result. Skipping this VM."
+                    continue
+                }
+
+                # Parse the ranges in the Tag value. Expects a string of comma-separated time ranges, or a single time range
+                $timeRangeList = @($schedule -split "," | ForEach-Object { $_.Trim() })
 	    
-        # Check each range against the current time to see if any schedule is matched
-        $scheduleMatched = $false
-        $matchedSchedule = $null
-        foreach ($entry in $timeRangeList) {
-            if ((CheckScheduleEntry -TimeRange $entry) -eq $true) {
-                $scheduleMatched = $true
-                $matchedSchedule = $entry
-                break
-            }
-        }
+                # Check each range against the current time to see if any schedule is matched
+                $scheduleMatched = $false
+                $matchedSchedule = $null
+                foreach ($entry in $timeRangeList) {
+                    if ((CheckScheduleEntry -TimeRange $entry) -eq $true) {
+                        $scheduleMatched = $true
+                        $matchedSchedule = $entry
+                        break
+                    }
+                }
 
-        # Enforce desired state for group resources based on result. 
-        if ($scheduleMatched) {
-            # Schedule is matched. Shut down the VM if it is running. 
-            Write-Output "[$($vm.Name)]: Current time [$currentTime] falls within the scheduled shutdown range [$matchedSchedule]"
-            AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "StoppedDeallocated" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
-        }
-        else {
-            # If the tag consists of a single date should the machine never be started
-            try {
-                if (Get-Date($schedule)) {
-                    Write-Output "[$($vm.Name)]: Current time [$currentTime] falls outside the scheduled shutdown range [$schedule], single time so not changing the state."
+                # Enforce desired state for group resources based on result. 
+                if ($scheduleMatched) {
+                    # Schedule is matched. Shut down the VM if it is running. 
+                    Write-Output "[$($vm.Name)]: Current time [$currentTime] falls within the scheduled shutdown range [$matchedSchedule]"
+                    AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "StoppedDeallocated" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
+                }
+                else {
+                    # If the tag consists of a single date should the machine never be started
+                    try {
+                        if (Get-Date($schedule)) {
+                            Write-Output "[$($vm.Name)]: Current time [$currentTime] falls outside the scheduled shutdown range [$schedule], single time so not changing the state."
+                        }
+                    }
+                    catch {
+                        Write-Output "[$($vm.Name)]: Current time falls outside of all scheduled shutdown ranges."
+                        AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "Started" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
+                    }
                 }
             }
-            catch {
-                Write-Output "[$($vm.Name)]: Current time falls outside of all scheduled shutdown ranges."
-                AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "Started" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
+            Write-Output "Finished processing virtual machine schedules"
+        }
+        else {
+            if ($subscription.Count -eq 0) {
+                Write-Error "No accessible subscription found with name or ID [$AzureSubscription], skipping. Check the runbook parameters and ensure the identity has appropriate access"
+                $subscriptionError = $true
+            }
+            elseif ($subscriptions.Count -gt 1) {
+                Write-Error "More than one accessible subscription found with name or ID [$AzureSubscription], skipping. Please ensure your subscription names are unique, or specify the ID instead"
+                $subscriptionError = $true
             }
         }
     }
-    Write-Output "Finished processing virtual machine schedules"
+    if ($subscriptionError) {
+        throw "Error processing one or more subscritpions, please check the logs"
+    }
 }
 catch {
     $errorMessage = $_.Exception.Message
