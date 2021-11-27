@@ -1,3 +1,8 @@
+## 3.9 2021 27th of November
+- Removed authenticaition via credentials
+- Set Run As as deprecated
+- Fixed Managed Identity issue
+
 ## 3.8 2021 3rd of November
 - Sometimes stop did not work
 
