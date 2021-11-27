@@ -44,16 +44,16 @@ Once the runbook is in place and scheduled, the only configuration required can 
 
 If any machine is stopped but not deallocated (it will still incur charges), will it be deallocated. Regardless of tags. Setting Deallocate to 'False' prevents this.
 
-This runbook do only handle RM virtual machines and not classic.
+This runbook only handles RM virtual machines and not classic.
 
 ## Tag-based Power Schedules
 If our goal is to manage the times that our virtual machines are shut down and powered on, we need a way to define this schedule. For example, perhaps we want to shut down our VMs after close of business and have them start up before people arrive in the office in the morning. But we also might want them shut down all weekend, not just at night. And what about holidays? Clearly, we also need an approach that allows some flexibility to get granular with scheduling.
 
-The first thing we might think to use is a runbook schedule, which Azure already provides out of the box. In essence, we can configure a runbook to run hourly or daily and do a task like shutting down VMs. But as just discussed, what if you have multiple schedules for different VMs? And that’s for shutting down – what about starting them again? Do you use multiple runbooks following multiple schedules? This starts to get confusing and awkward to manage. Unfortunately most of the existing examples I came across followed this kind of approach.
+The first thing we might think to use is a runbook schedule, which Azure already provides out of the box. In essence, we can configure a runbook to run hourly or daily and do a task like shutting down VMs. But as just discussed, what if you have multiple schedules for different VMs? And that’s for shutting down – what about starting them again? Do you use multiple runbooks following multiple schedules? This starts to get confusing and awkward to manage. Unfortunately, most of the existing examples I came across followed this kind of approach.
 
 When you think about it, the power schedule applies to the resource, not to the runbook. The alternative approach used by the runbook solution here described is to tag a VM with a schedule, so that the mechanism used to stop and start VMs is transparent – it just happens when you declare that it should. If you’re especially nerdy when it comes to programming, you might recognize this as a declarative rather than imperative approach. It doesn’t use PowerShell Desired State Configuration (yet?), but is in the same spirit.
 
-So what does it look like? We simply apply a tag to a virtual machine or an Azure resource group that contains VMs. This tag is a simple string that describes the times the VM should be shut down.
+So, what does it look like? We simply apply a tag to a virtual machine or an Azure resource group that contains VMs. This tag is a simple string that describes the times the VM should be shut down.
 
 ![Result](images/TagExample.png)
 
@@ -108,7 +108,7 @@ If the current time matches any of the schedules, the runbook concludes that thi
 
 If the tag contains a single time value, will the machine be turned off at that time. It will not be turned on at other times.
 
-If any of the defined schedules can’t be parsed (PowerShell doesn’t understand “beer thirty”), it will ignore that and treat whatever was intended as online time. Therefore, **the default failsafe behavior is to keep VMs online** or start them, not shut them down.
+If any of the defined schedules can’t be parsed (PowerShell doesn’t understand “beer thirty”), it will ignore that and treat whatever was intended as online time. Therefore, **the default failsafe behaviour is to keep VMs online** or start them, not shut them down.
 
 ## Runbook Logs
 Various output messages are recorded by the runbook every time it runs, indicating what actions were taken and whether any errors occurred in processing tags or accessing the subscription. These logs can be found in the output of each job.
@@ -136,7 +136,7 @@ Now we’ll go through the steps to get this working in your subscription. It wi
 This is an Azure Automation runbook, and as such you’ll need the following to use it:
   - Microsoft Azure [subscription](http://azure.microsoft.com/) (including trial subscriptions)
   - Azure Automation account created in subscription ([instructions](https://docs.microsoft.com/en-us/azure/automation/automation-create-standalone-account))
-    - The Automation Account has to be created with a runas account or
+    - The Automation Account has to be created with a Run As account or
     - System Managed Account or
     - User Managed Account
   - Runbook file downloaded from this page
@@ -157,32 +157,21 @@ The runbook is contained in the file "AutoShutdownSchedule.ps1" within the downl
 
 ## Setting up Credentials
 
-Use one of the options below.
-### Saved credentials
-```diff
-- This section is no longer needed, the script instead uses an Automation run as account, or a managed identity.
-```
-When the runbook executes, it accesses your subscription with credentials you configure. By default, it looks for a credential named "Default Automation Credential". This is for a user you create in your subscription's Azure Active Directory which is granted permissions to manage subscription resources, e.g. as a co-administrator. The steps:
-
-- Create an Azure Active Directory user for runbook use if you haven’t already. This account will be the "service account" for the runbook and **must be a Virtual Machine Contributor** in the target subscription.
-- Open subscription in [Azure portal](https://portal.azure.com)
-- Open the **Automation Account** which will contain the runbook
-- Open the **Assets** view from the resources section
-- Open the **Credentials** view
-- Click Add a credential from the top menu
-- Enter details for the new credential. Recommended to use name "**Default Automation Credential**".
-- Click **Create**
-
-![Credential](images/Credential.png)
+Use one of the options below. 
 
 ### System Managed Identity
-Create a System Managed Identity in the Automation Account, this account will automatically get Contributor rights in the subscription. If you remove the Automation Account will the System Managed Identity automatically be removed. Create a variable with the name Managed Identity ID and the value as the ID of the managed identy.
+Create a System Managed Identity in the Automation Account and ensure it has Read and Virtual Machine Contributor rights in the subscription. If you remove the Automation Account the System Managed Identity will also automatically be removed. Create a variable with the name **Managed Identity ID** and the value as **System**.
 
 ### User Managed Identity
-Create a User Managed Identity and select that identity for use in the Automation Account. The identity must have Read and Virtual Machine Contributor rights. Create a variable with the name **Managed Identity ID** and the value as the ID of the managed identy.
+Create a User Managed Identity and select that identity for use in the Automation Account. The identity must have Read and Virtual Machine Contributor rights. Create a variable with the name **Managed Identity ID** and the value as the **ID** of the managed user identity.
 
 ### Run As Account
-A Run As account automatically gets Contributor right on the subscription. Make sure you renew this account when it expires.
+```diff
+- This section is deprecated. Use a Managed Identity, they don't expire and are more secure.
+```
+A Run As account automatically gets Contributor rights on the subscription. Make sure you renew this account when it expires.
+
+Note: A Managed Identity takes precedence over a Run As Account
 
 ## Create Variables for Subscription Name and time zone
 The runbook also needs to know which subscription to connect to when it runs. In theory, a runbook can connect to any subscription, so we must specify one in particular. This is easily done by setting up a variable in our automation account.
@@ -194,7 +183,7 @@ The runbook also needs to know which subscription to connect to when it runs. In
 - Click **Add a variable** from the top menu
 - Give the variable a name ("**Default Azure Subscription**" expected by default), and enter the subscription name as the variable’s value. Click **Create**.
 - Click **Add a variable** from the top menu again
-- Give the variable a name ("**Default Time Zone**" expected by default), and enter the time zone name as the variable’s value, for example "W. Europe Standard Time". Use the Powershell command `Get-TimeZone -ListAvailable` to see all recognized time zones.  Click **Create**.
+- Give the variable a name ("**Default Time Zone**" expected by default), and enter the time zone name as the variable’s value, for example "W. Europe Standard Time". Use the PowerShell command `Get-TimeZone -ListAvailable` to see all recognized time zones.  Click **Create**.
 
 ## Schedule the Runbook
 The runbook should be scheduled to run periodically. As previously discussed, this does not determine the power on/power off schedule. It only determines how often the power schedules on resources are checked. Azure allows up to an hourly frequency, so we’ll take advantage of that:

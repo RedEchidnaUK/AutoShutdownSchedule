@@ -1,9 +1,9 @@
 <#PSScriptInfo
-.VERSION 3.8
+.VERSION 3.9
 
 .GUID 482e19fb-a8f0-4e3c-acbc-63b535d6486e
 
-.AUTHOR Tomas Rudh
+.AUTHOR Tomas Rudh, Red Echidna UK
 
 .LICENSE
 
@@ -341,71 +341,29 @@ try {
     # Retrieve credential
     $ManagedIdentityId = Get-AutomationVariable -Name "Managed Identity ID" -ErrorAction Ignore
     $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection" -ErrorAction Ignore
-    if ($ManagedIdentityId -eq 'System') {
-        $IdentityName = (Get-AzADServicePrincipal -ServicePrincipalName $ManagedIdentityId).DisplayName
-        Write-Output ("Logging in to Azure using the system managed identity ($IdentityName)...")
-        if ($AzureSubscriptionName.Length -eq 0) {
-            throw "No subscription indicated"
+    if ($ManagedIdentityId) {
+        if ($ManagedIdentityId -eq 'System') {
+            Write-Output ("Logging in to Azure using the system managed identity...")
+            Connect-AzAccount -Identity > $null
         }
-        Connect-AzAccount -Identity -Subscription $AzureSubscriptionName > $null
-    }
-    elseif ($ManagedIdentityId) {
-        Write-Output ("Logging in to Azure using the user managed identity...")
-        if ($AzureSubscriptionName.Length -eq 0) {
-            throw "No subscription indicated"
-        }
-        Connect-AzAccount -Identity -AccountId $ManagedIdentityId -Subscription $AzureSubscriptionName > $null
+        else {
+            Write-Output ("Logging in to Azure using the user managed identity ($IdentityName)...")
+            Connect-AzAccount -Identity -AccountId $ManagedIdentityId > $null
+        }    
     }
     elseif ($RunAsConnection) {
         Write-Output ("Logging in to Azure using the runas account...")
-        Connect-AzAccount -ServicePrincipal -TenantId $RunAsConnection.TenantId -ApplicationId $RunAsConnection.ApplicationId `
-            -CertificateThumbprint $RunAsConnection.CertificateThumbprint -SubscriptionId $RunAsConnection.SubscriptionId > $null
+        Connect-AzAccount -ServicePrincipal -TenantId $RunAsConnection.TenantId -ApplicationId $RunAsConnection.ApplicationId -CertificateThumbprint $RunAsConnection.CertificateThumbprint -SubscriptionId $RunAsConnection.SubscriptionId > $null
     }
     else {
-        Write-Output "Logging in to Azure using the supplied credentials"
-        Write-Output "Specified credential asset name: [$AzureCredentialName]"
-        if ($AzureCredentialName -eq "Use *Default Automation Credential* asset") {
-            # By default, look for "Default Automation Credential" asset
-            $azureCredential = Get-AutomationPSCredential -Name "Default Automation Credential"
-            if ($null -ne $azureCredential) {
-                Write-Output "Attempting to authenticate as: [$($azureCredential.UserName)]"
-            }
-            else {
-                throw "No runas account and no automation credential name was specified, and no credential asset with name 'Default Automation Credential' was found. Either specify a runas account, a stored credential name or define the default using a credential asset"
-            }
-        }
-        else {
-            # A different credential name was specified, attempt to load it
-            $azureCredential = Get-AutomationPSCredential -Name $AzureCredentialName
-            if ($null -eq $azureCredential) {
-                throw "Failed to get credential with name [$AzureCredentialName]"
-            }
-        }
-
-        # Connect to Azure using credential asset (AzureRM)
-        if ($AzureSubscriptionName.Length -eq 0) {
-            throw "No subscription indicated"
-        }  
-        $account = Connect-AzAccount -Credential $azureCredential -SubscriptionName $AzureSubscriptionName
-
-        # Check for returned userID, indicating successful authentication
-        #if(Get-AzureAccount -Name $azureCredential.UserName)
-        if ($account.Context.Account.Id -eq $azureCredential.UserName) {
-            Write-Output "Successfully authenticated as user: [$($azureCredential.UserName)]"
-        }
-        else {
-            throw "Authentication failed for credential [$($azureCredential.UserName)]. Ensure a valid Azure Active Directory user account is specified which is configured as subscription owner (modern portal) on the target subscription. Verify you can log into the Azure portal using these credentials."
-        }
+        throw "No 'Azure Run As Account' or Managed Identity Supplied."
     }
 
     # If subscription is set in varable, use that. Otherwise use subscription from the runas account
-    if ($AzureSubscriptionName.length -gt 0) {
-        $AzureSubscriptionId = (Get-AzSubscription -SubscriptionName $AzureSubscriptionName).Id
+    if ($AzureSubscriptionName.length -eq 0) {
+        $AzureSubscriptionName = $RunAsConnection.SubscriptionId
     }
-    else {
-        $AzureSubscriptionId = $RunAsConnection.SubscriptionId
-    }
-    Set-AzContext -SubscriptionId $AzureSubscriptionId > $null
+    
 
     # Validate subscription
     $subscriptions = @(Get-AzSubscription | Where-Object { $_.Name -eq $AzureSubscriptionName -or $_.Id -eq $AzureSubscriptionName })
@@ -414,12 +372,8 @@ try {
         $targetSubscription = $subscriptions | Select-Object -First 1
         $targetSubscription | Select-AzSubscription > $null
 
-        # Connect via Azure Resource Manager if not already done using the runas account
-        if (!$RunAsConnection) {
-            Connect-AzAccount -Credential $azureCredential -SubscriptionId $targetSubscription.SubscriptionId > $null
-        }
+        Set-AzContext -SubscriptionId $targetSubscription.SubscriptionId > $null
 
-        #$currentSubscription = Get-AzSubscription
         Write-Output "Working against subscription: $($targetSubscription.Name) ($($targetSubscription.SubscriptionId))"
     }
     else {
