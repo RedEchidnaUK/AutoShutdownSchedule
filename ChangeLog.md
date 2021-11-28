@@ -1,8 +1,11 @@
-## 4.0 2021 27th of November
+## 4.1.1 2021 28th of November
+- Fixed versioning
+
+## 4.1 2021 27th of November
 - Added ability to use multiple subscriptions. (Note: The name of the subscription variable has been changed to '**Azure Subscription(s)**')
 - Added automatic detection of the System Managed identity
 
-## 3.9 2021 27th of November
+## 4.0 2021 27th of November
 - Removed authenticaition via credentials
 - Set Run As as deprecated
 - Fixed Managed Identity issue

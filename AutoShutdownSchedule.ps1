@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 4.0
+.VERSION 4.1.1
 
 .GUID 482e19fb-a8f0-4e3c-acbc-63b535d6486e
 
@@ -66,8 +66,6 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 
 param(
     [parameter(Mandatory = $false)]
-    [String] $AzureCredentialName = "Use *Default Automation Credential* Asset",
-    [parameter(Mandatory = $false)]
     [String] $AzureSubscriptionCSVList = "Use *Default Azure Subscription* Variable Value",
     [parameter(Mandatory = $false)]
     [String] $tz = "Use *Default Time Zone* Variable Value",
@@ -77,7 +75,7 @@ param(
     [bool]$Deallocate = $true
 )
 
-$VERSION = "3.6.0"
+$VERSION = "4.1.1"
 $script:DoNotStart = $false
 
 # Define function to check current time against specified range
@@ -132,10 +130,7 @@ function CheckScheduleEntry ([string]$TimeRange) {
             }
             else {
                 # Otherwise attempt to parse as a date, e.g. 'December 25'
-                else
-                {
-                    $parsedDay = Get-Date $TimeRange
-                }
+                $parsedDay = Get-Date $TimeRange
             }
 	    
             if ($null -ne $parsedDay) {
