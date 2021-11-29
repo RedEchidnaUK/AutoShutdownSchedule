@@ -27,7 +27,7 @@
 ![Result](images/Output.png)
 
 ## Why Use This?
-Money! The largest share of Azure subscription costs when using Virtual Machines (IaaS) is the compute time: how many hours the VMs are running per month. If you have VMs that can be stopped during certain time periods, you can reduce the bill by turning them off (and “deallocating” them).
+Money! The largest share of Azure subscription costs when using Virtual Machines (IaaS) is the compute time: how many hours the VMs are running per month. If you have VMs that can be stopped during certain time periods, you can reduce the bill by turning them off (and "deallocating" them).
 
 Unfortunately, Microsoft doesn’t include any tools to directly manage a schedule like this. That’s what this runbook helps achieve without 3rd party management tools or chaining a junior admin to the keyboard for 6AM wakeup call.
 
@@ -58,7 +58,7 @@ So, what does it look like? We simply apply a tag to a virtual machine or an Azu
 ![Result](images/TagExample.png)
 
 ## Tag Content
-The runbook looks for a tag named “AutoShutdownSchedule” assigned to a virtual machine or resource group containing VMs. The value of this tag is one or more schedule entries, or time ranges, defining when VMs should be shut down. By implication, any times not defined in the shutdown schedule are times the VM should be online. So, each time the runbook checks the current time against the schedule, it makes sure the VM is powered on or off accordingly.
+The runbook looks for a tag named "**AutoShutdownSchedule**" and optionally a tag named "**AutoShutdownScheduleTimeZone**" assigned to a virtual machine or resource group containing VMs. The value of the first tag is one or more schedule entries, or time ranges, defining when VMs should be shut down. The value of the second tag is to specify the specific timezone the times relate to, if not specifed the default timezone is used. By implication, any times not defined in the shutdown schedule are times the VM should be online (with the exception of time only, see below). So, each time the runbook checks the current time against the schedule, it makes sure the VM is powered on or off accordingly.
 
 There are three kinds of entries:
 
@@ -66,10 +66,10 @@ Time range: two times of day or absolute dates separated by ‘->’ (dash great
 
 Day of week / Date: Interpreted as a full day that VMs should be shut down.
 
-Time only: the hour the machine should be shut down, the time has to be the only value in the tag, this machine will never be automatically started.
+Time only: the hour the machine should be shut down, the time has to be the only value in the tag, this machine will **never be automatically started**.
 
 ### Get to Know DateTime
-All times must be strings that can be successfully parsed as “DateTime” values. In other words, PowerShell must be able to look at the text value you provide and say “OK, I know how to interpret that as a specific date/time”. There is a surprising amount of flexibility allowed, and the easiest way to verify your choice is to open a PowerShell prompt and try the command `Get-Date '<time text>'`, and see what happens. If PowerShell spits out a formatted timestamp, that’s good. If it complains that it doesn’t know what you mean, try writing the time differently.
+All times must be strings that can be successfully parsed as "DateTime" values. In other words, PowerShell must be able to look at the text value you provide and say "OK, I know how to interpret that as a specific date/time". There is a surprising amount of flexibility allowed, and the easiest way to verify your choice is to open a PowerShell prompt and try the command `Get-Date '<time text>'`, and see what happens. If PowerShell spits out a formatted timestamp, that’s good. If it complains that it doesn’t know what you mean, try writing the time differently. It is worth noting that some settings, such as 'December 25', can output unexpected results depending on the 'culture' PowerShell is using. For example, 'December 25' might be interpreted as the 1st day of December in the year 2025, not the 25th day of December! At the time of writing Azure seems to use the default culture of `en-US`, so use `Get-Culture` to see what culture you are currently set to and try setting the PowerShell session you are testing with to `en-US`, using `[System.Threading.Thread]::CurrentThread.CurrentCulture = "en-US"`, and see if you get the expected result.
 
 ![Result](images/GetDate.png)
 
@@ -98,17 +98,17 @@ The easiest way to write the schedule is to say it first in words as a list of t
 ## What the Runbook Does
 The runbook AutoShutdownSchedule is an Azure Automation runbook. It can be run once at a time manually, but is intended to be configured to run on a schedule, e.g. once per hour.
 
-The runbook expects three parameters: the name of the Azure subscription that contains the VMs, the name of an Azure Automation credential asset with stored username and password for the account to use when connecting to that subscription and the timezone you are in. If not specifically configured, the runbook will try by default to find a credential asset named “Default Automation Credential” and a variable asset named “Default Azure Subscription”. Setting these up is discussed in more detail below. There is a fourth parameter called "Simulate" which, if True, tells the runbook to only evaluate schedules but not enforce them. This is discussed further below.
+The runbook expects two parameters: the name of the Azure subscription(s) that contain(s) the VMs and the timezone you are in. If not specifically configured, the runbook will try by default to find a variable asset named "Azure Subscription(s)" and "Default Time Zone". Setting these up is discussed in more detail below. There is a third parameter called "Simulate" which, if True, tells the runbook to only evaluate schedules but not enforce them. This is discussed further below.
 
-Once successfully authenticated to the target subscription, the runbook looks for any VM or resource group that has a tag named “AutoShutdownSchedule”. Any resource groups without this specific tag are ignored. For each tagged resource found, we next look at the tag values to see what the schedule entries are. Each is inspected and compared with the current time. Then, one of several decisions is made:
+Once successfully authenticated to the target subscription, the runbook looks for any VM or resource group that has a tag named "AutoShutdownSchedule" and optionally the tag "AutoShutdownScheduleTimeZone". Any resource groups without the required tag are ignored. For each tagged resource found, we next look at the tag values to see what the schedule entries are. Each is inspected and compared with the current time (in either the default timezone or the optionally specified timezone). Then, one of several decisions is made:
 
-If the current time is outside of the defined schedules, the runbook concludes that this is “online time” and starts any directly or indirectly tagged VM that is currently powered off.
+If the current time is outside of the defined schedules, the runbook concludes that this is "online time" and starts any directly or indirectly tagged VM that is currently powered off.
 
-If the current time matches any of the schedules, the runbook concludes that this is “shutdown time” and stops any directly or indirectly tagged VM that is currently powered on.
+If the current time matches any of the schedules, the runbook concludes that this is "shutdown time" and stops any directly or indirectly tagged VM that is currently powered on.
 
-If the tag contains a single time value, will the machine be turned off at that time. It will not be turned on at other times.
+If the tag contains a single time value, the machine will be turned off at that time. It will not be turned on at other times.
 
-If any of the defined schedules can’t be parsed (PowerShell doesn’t understand “beer thirty”), it will ignore that and treat whatever was intended as online time. Therefore, **the default failsafe behaviour is to keep VMs online** or start them, not shut them down.
+If any of the defined schedules can’t be parsed (PowerShell doesn’t understand "beer thirty"), it will ignore that and treat whatever was intended as online time. Therefore, **the default failsafe behaviour is to keep VMs online** or start them, not shut them down. For an invalid timezone the VM is skipped as the runbook doesn't know if it should be on or off.
 
 ## Runbook Logs
 Various output messages are recorded by the runbook every time it runs, indicating what actions were taken and whether any errors occurred in processing tags or accessing the subscription. These logs can be found in the output of each job.
@@ -215,11 +215,20 @@ Finally, we need to tag our VM resource groups. The tag format was discussed abo
 - Open subscription in [Azure portal](https://portal.azure.com)
 - Navigate to **Browse > Resource Groups**, and open a resource group that contains VMs to schedule
 - Click the tag icon in the upper right
-- In the **Key** field, enter "AutoShutdownSchedule"
+- In the **Key** field, enter "**AutoShutdownSchedule**"
 - In the **Value** field, enter a schedule as discussed above, such as "10PM -> 6AM"
 - Click **Save** in the top menu
 
 After repeating this process for each VM resource group in your subscription, everything is set to automatically shut down and start up your virtual machines. Going forward, you can simply update the tag as needed to adjust the schedule, and add a tag to new resource groups that require a shutdown schedule. Remember, VMs in untagged resource groups will not be managed by the runbook.
+
+## Optionally Configure Timezone Tags
+If you have VMs in multiple timezones you will want to tag them as such. To create timesone tages:
+- Open subscription in [Azure portal](https://portal.azure.com)
+- Navigate to **Browse > Resource Groups**, and open a resource group that contains VMs to schedule
+- Click the tag icon in the upper right
+- In the **Key** field, enter "**AutoShutdownScheduleTimeZone**"
+- In the **Value** field, enter a timezone as discussed above, such as "GMT Standard Time"
+- Click **Save** in the top menu
 
 ## Initial Testing
 To validate that the runbook works, we can run an initial test manually and inspect the results. This is easy:
@@ -243,6 +252,6 @@ This time, we should see that the current time doesn’t match any shutdown sche
 To check for problems, you can inspect the runbook job history to look at the output and streams / history for each individual job. In the new portal, the output view doesn't necessarily show error details, so make sure to check the Streams view as well.
 
 ## Automation Account Configuration
-Before putting this runbook into production where you count on it to reliably manage your VM power state, I recommend configuring your automation account as a “Basic” rather than a free account. This ensures that the 500 minute monthly run time limitation will not be hit and prevent the runbooks from working. The cost is extremely low for additional minutes, so the few extra dollars, if any, will easily be offset by the compute time savings.
+Before putting this runbook into production where you count on it to reliably manage your VM power state, I recommend configuring your automation account as a "Basic" rather than a free account. This ensures that the 500 minute monthly run time limitation will not be hit and prevent the runbooks from working. The cost is extremely low for additional minutes, so the few extra dollars, if any, will easily be offset by the compute time savings.
 
 This can be changed in the "Pricing Tier" view under the automation account in the portal at [Azure portal](https://portal.azure.com)

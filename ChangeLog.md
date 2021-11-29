@@ -1,3 +1,8 @@
+## 4.2 2021 29th of November
+- Added ability to specify the VM timezone using a tag on the VM or the parent resource group
+- Added documentation for the new feature
+- Removed documentation for the removed authentication credentials in 4.0
+
 ## 4.1.1 2021 28th of November
 - Fixed versioning
 

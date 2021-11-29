@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 4.1.1
+.VERSION 4.2.0
 
 .GUID 482e19fb-a8f0-4e3c-acbc-63b535d6486e
 
@@ -35,11 +35,12 @@ OR OTHER DEALINGS IN THE SOFTWARE.
     This runbook requires the "Az.Accounts", "Az.Compute" and "Az.Resources" modules which need to be added to the Azure Automation account.
 
     Valid tags:
-    19:00->08:00            Turned off between 19 and 08
+    19:00->08:00            Turned off between 19:00 and 08:00
     Sunday                  Turned off sundays
     12-24                   Turned off 24th of December
-    19:00->08:00,Sunday     Turned off between 19 and 08 and on Sundays
-    17:00                   Turns off at 17, does never start, has to be alone in the tag
+    19:00->08:00,Sunday     Turned off between 19:00 and 08:00 and on Sundays
+    17:00                   Turns off at 17:00, never starts, has to be alone in the tag
+    December 25             Turned off on 25th of December
 
     PARAMETER AzureSubscriptionName
     The name or ID of Azure subscription in which the resources will be created. By default, the runbook will use 
@@ -75,16 +76,16 @@ param(
     [bool]$Deallocate = $true
 )
 
-$VERSION = "4.1.1"
+$VERSION = "4.2.0"
 $script:DoNotStart = $false
 
 # Define function to check current time against specified range
-function CheckScheduleEntry ([string]$TimeRange) {	
+function CheckScheduleEntry ([string]$TimeRange, [string]$specifiedTimeZone) {	
     # Initialize variables
     $rangeStart, $rangeEnd, $parsedDay = $null
     $tempTime = (Get-Date).ToUniversalTime()
-    $tzEST = [System.TimeZoneInfo]::FindSystemTimeZoneById($tz)
-    $CurrentTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzEST)
+    $definedTimeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById($specifiedTimeZone)
+    $CurrentTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $definedTimeZone)
     $midnight = $currentTime.AddDays(1).Date	        
 
     try {
@@ -130,7 +131,7 @@ function CheckScheduleEntry ([string]$TimeRange) {
             }
             else {
                 # Otherwise attempt to parse as a date, e.g. 'December 25'
-                $parsedDay = Get-Date $TimeRange
+                $parsedDay = Get-Date $TimeRange  
             }
 	    
             if ($null -ne $parsedDay) {
@@ -294,6 +295,16 @@ function ValidateScheduleList ($TimeRangeList) {
     return 'OK'
 }
 
+function ValidateTimeZone ($TimeZone) {
+    try {
+        [System.TimeZoneInfo]::FindSystemTimeZoneById($TimeZone) > $null
+        return "OK"
+    }
+    catch {
+        return "Invalid timezone tag with value: $TimeZone. Please check the tag is a valid timezone"
+    }
+}
+
 # Main runbook content
 try {
     # Ensures you do not inherit an AzContext in your runbook
@@ -312,8 +323,8 @@ try {
     }
 
     $tempTime = (Get-Date).ToUniversalTime()
-    $tzEST = [System.TimeZoneInfo]::FindSystemTimeZoneById($tz)
-    $CurrentTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzEST)
+    $tzDefault = [System.TimeZoneInfo]::FindSystemTimeZoneById($tz)
+    $CurrentTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzDefault)
     $ManagedIdentityId = Get-AutomationVariable -Name "Managed Identity ID" -ErrorAction Ignore
     $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection" -ErrorAction Ignore
     $AzureSubscriptionList = @()
@@ -390,7 +401,9 @@ try {
 
             # Get resource groups that are tagged for automatic shutdown of resources
             $taggedResourceGroups = @(Get-AzResourceGroup | Where-Object { $_.Tags.Count -gt 0 -and $_.Tags.AutoShutdownSchedule })
+            $taggedResourceGroupsTZ = @(Get-AzResourceGroup | Where-Object { $_.Tags.Count -gt 0 -and $_.Tags.AutoShutdownScheduleTimeZone })
             $taggedResourceGroupNames = @($taggedResourceGroups | Select-Object -ExpandProperty ResourceGroupName)
+            $taggedResourceGroupNamesTZ = @($taggedResourceGroupsTZ | Select-Object -ExpandProperty ResourceGroupName)
             Write-Output "Found [$($taggedResourceGroups.Count)] schedule-tagged resource groups in subscription"	
 
             # For each VM, determine
@@ -404,12 +417,13 @@ try {
                 DeallocateVirtualMachine -VirtualMachine $vm -Simulate $Simulate -Deallocate $Deallocate
 
                 $schedule = $null
+                $scheduleTimeZone = $null
 
                 # Check for direct tag or group-inherited tag
                 if ($vm.Tags -and $vm.Tags.AutoShutdownSchedule) {
                     # VM has direct tag (possible for resource manager deployment model VMs). Prefer this tag schedule.
                     $schedule = $vm.Tags.AutoShutdownSchedule
-                    Write-Output "[$($vm.Name)]: Found direct VM schedule tag with value: $schedule"
+                    Write-Output "[$($vm.Name)]: Found direct VM schedule tag with value: $schedule"                
                 }
                 elseif ($taggedResourceGroupNames -contains $vm.ResourceGroupName) {
                     # VM belongs to a tagged resource group. Use the group tag
@@ -429,9 +443,38 @@ try {
                     continue
                 }
 
+                if ($vm.Tags -and $vm.Tags.AutoShutdownScheduleTimeZone) {
+                    $scheduleTimeZone = $vm.Tags.AutoShutdownScheduleTimeZone
+                    Write-Output "[$($vm.Name)]: Found direct VM schedule timezone tag with value: $scheduleTimeZone"
+                }
+                elseif ($taggedResourceGroupNamesTZ -contains $vm.ResourceGroupName) {
+                    # VM belongs to a tagged resource group. Use the group tag
+                    $parentGroup = $taggedResourceGroups | Where-Object ResourceGroupName -EQ $vm.ResourceGroupName
+                    if ($parentGroup.Tags -and $parentGroup.Tags.AutoShutdownScheduleTimeZone) {
+                        $scheduleTimeZone = $parentGroup.Tags.AutoShutdownScheduleTimeZone
+                        Write-Output "[$($vm.Name)]: Found parent resource group schedule timezone tag with value: $scheduleTimeZone"
+                    }
+                    else {
+                        $scheduleTimeZone = $tzDefault
+                        Write-Warning "[$($vm.Name)]: Not tagged for schedule timezone directly or via membership in a tagged resource group, using default timezone: $scheduleTimeZone"
+                    }
+                }
+                else {
+                    $scheduleTimeZone = $tzDefault
+                    Write-Warning "[$($vm.Name)]: Not tagged for schedule timezone directly or via membership in a tagged resource group, using default timezone: $scheduleTimeZone"
+                }
+
+                # Check for a valid schedule
                 $Result = ValidateScheduleList $schedule
                 if ($Result -ne 'OK') {
                     Write-Error "[$($vm.Name)]: $Result. Skipping this VM."
+                    continue
+                }
+
+                # Check for a valid timezone
+                $TZValidationResult = ValidateTimeZone $scheduleTimeZone
+                if ($TZValidationResult -ne 'OK') {
+                    Write-Error "[$($vm.Name)]: $TZValidationResult. Skipping this VM."
                     continue
                 }
 
@@ -442,28 +485,30 @@ try {
                 $scheduleMatched = $false
                 $matchedSchedule = $null
                 foreach ($entry in $timeRangeList) {
-                    if ((CheckScheduleEntry -TimeRange $entry) -eq $true) {
+                    if ((CheckScheduleEntry -TimeRange $entry -specifiedTimeZone $scheduleTimeZone) -eq $true) {
                         $scheduleMatched = $true
                         $matchedSchedule = $entry
                         break
                     }
                 }
 
+                $definedTimeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById($scheduleTimeZone)
+                $CurrentTimeInTZ = [System.TimeZoneInfo]::ConvertTimeFromUtc($currentTime, $definedTimeZone)
                 # Enforce desired state for group resources based on result. 
                 if ($scheduleMatched) {
                     # Schedule is matched. Shut down the VM if it is running. 
-                    Write-Output "[$($vm.Name)]: Current time [$currentTime] falls within the scheduled shutdown range [$matchedSchedule]"
+                    Write-Output "[$($vm.Name)]: Current time [$CurrentTimeInTZ] in [$scheduleTimeZone] falls within the scheduled shutdown range [$matchedSchedule]"
                     AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "StoppedDeallocated" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
                 }
                 else {
                     # If the tag consists of a single date should the machine never be started
                     try {
                         if (Get-Date($schedule)) {
-                            Write-Output "[$($vm.Name)]: Current time [$currentTime] falls outside the scheduled shutdown range [$schedule], single time so not changing the state."
+                            Write-Output "[$($vm.Name)]: Current time [$currentTimeInTZ] in [$scheduleTimeZone] falls outside the scheduled shutdown range [$schedule], single time so not changing the state."
                         }
                     }
                     catch {
-                        Write-Output "[$($vm.Name)]: Current time falls outside of all scheduled shutdown ranges."
+                        Write-Output "[$($vm.Name)]: Current time [$currentTimeInTZ] in [$scheduleTimeZone] falls outside of all scheduled shutdown ranges."
                         AssertVirtualMachinePowerState -VirtualMachine $vm -RGName $vm.ResourceGroupName -DesiredState "Started" -ResourceManagerVMList $resourceManagerVMList -ClassicVMList $classicVMList -Simulate $Simulate
                     }
                 }
@@ -492,6 +537,6 @@ catch {
 }
 finally {
     $tempTime = (Get-Date).ToUniversalTime()
-    $EndTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzEST)
+    $EndTime = [System.TimeZoneInfo]::ConvertTimeFromUtc($tempTime, $tzDefault)
     Write-Output "Runbook finished (Duration: $(("{0:hh\:mm\:ss}" -f ($EndTime - $currentTime))))"
 }
